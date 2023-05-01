@@ -62,8 +62,10 @@ def strtobool(v):
 def get_args():
     # fmt: off
     parser = argparse.ArgumentParser()
-    parser.add_argument("--exp-name", type=str, default=os.path.basename(__file__).rstrip(".py"),
+    parser.add_argument("--exp-name", type=str, default=None,
         help="the name of this experiment")
+    parser.add_argument("--save-name", type=str, default=None,
+        help="name for model to be saved as")
     parser.add_argument("--seed", type=int, default=1,
         help="seed of the experiment")
     parser.add_argument("--torch-deterministic", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
@@ -78,12 +80,12 @@ def get_args():
         help="the entity (team) of wandb's project")
     parser.add_argument("--capture-video", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
         help="whether to capture videos of the agent performances (check out `videos` folder)")
-    parser.add_argument("--save-model", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
-        help="whether to save model into the `runs/{run_name}` folder")
     parser.add_argument("--upload-model", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
         help="whether to upload the saved model to huggingface")
     parser.add_argument("--hf-entity", type=str, default="",
         help="the user or org name of the model repository from the Hugging Face Hub")
+    parser.add_argument("--config-file-name", type=str, default=None,
+        help="added from scheduler.py so that the main algo file knows to remove the config file on completion")
 
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="CartPole-v1",
@@ -114,10 +116,15 @@ def get_args():
         help="the frequency of training")
     
     #R2D2 args
-    parser.add_argument("--burn-in-length", type=int, default=5,
+    parser.add_argument("--burn-in-length", type=int, default=4,
         help="Length of timesteps prior to each batch sequence to burn-in so rnn_hidden_states are not stale")
-    parser.add_argument("--sequence-length", type=int, default=10,
+    parser.add_argument("--sequence-length", type=int, default=8,
         help="Length of each batch sequence to use")
-    args = parser.parse_args()
     # fmt: on
+        
+    parser.add_argument('--env-kwargs', nargs='*', action=ParseKwargs, default={})
+
+
+
+    args = parser.parse_args()
     return args

@@ -15,3 +15,4 @@ saved_models/*
 write_and_test/.ipynb_checkpoints/*
 write_and_test/__pycache__/*
 r2d2_algo/__pycache__/*
+__pycache__/*

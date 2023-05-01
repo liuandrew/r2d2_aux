@@ -2,6 +2,7 @@
 import torch
 import torch.optim as optim
 import gym
+import gym_nav
 import numpy as np
 import random
 import torch.nn.functional as F
@@ -11,6 +12,13 @@ import time
 from model import RNNQNetwork, linear_schedule
 from storage import SequenceReplayBuffer
 from args import get_args
+
+import os
+import sys
+parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+sys.path.append(parent_dir)
+
+from scheduler import archive_config_file
 
 if __name__ == '__main__':
     args = get_args()
@@ -36,6 +44,9 @@ if __name__ == '__main__':
     torch_deterministic = args.torch_deterministic
     track = args.track
     exp_name = args.exp_name
+    
+    if exp_name == None:
+        exp_name = env_id
     cuda = args.cuda
     
     run_name = f"{exp_name}__{seed}__{int(time.time())}"
@@ -66,7 +77,7 @@ if __name__ == '__main__':
     device = torch.device('cuda' if torch.cuda.is_available() and cuda else 'cpu')
 
 
-    env = gym.make(env_id)
+    env = gym.make(env_id, **args.env_kwargs)
 
     hidden_size = 64
     q_network = RNNQNetwork(env, hidden_size).to(device)
@@ -181,16 +192,10 @@ if __name__ == '__main__':
             returns = []
             lengths = []
             
-    if args.save_model:
-        save_name = f'{args.exp_name}__{args.seed}'
-
-        # Note: add manual save name here later
-        # if args.save_name is not None:
-        #   save_name = args.save_name
-        
+    if args.save_name is not None:        
         #Save just the q_network which can be used to generate actions
-        save_path = f'saved_models/{save_name}.pt'
-        torch.save(q_network.state_dict(), save_path)
+        save_path = f'saved_models/{args.save_name}.pt'
+        torch.save(q_network, save_path)
         
         #Code to save entire training history which can be reinitialized later
         # torch.save({
@@ -203,3 +208,6 @@ if __name__ == '__main__':
         #     'global_step': global_step,
         #     'global_update_steps': global_update_steps
         # }, save_path)
+        
+    if args.config_file_name is not None:
+        archive_config_file(args.config_file_name)
