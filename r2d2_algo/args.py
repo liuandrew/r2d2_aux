@@ -64,8 +64,6 @@ def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--exp-name", type=str, default=None,
         help="the name of this experiment")
-    parser.add_argument("--save-name", type=str, default=None,
-        help="name for model to be saved as")
     parser.add_argument("--seed", type=int, default=1,
         help="seed of the experiment")
     parser.add_argument("--torch-deterministic", type=lambda x: bool(strtobool(x)), default=True, nargs="?", const=True,
@@ -84,6 +82,17 @@ def get_args():
         help="whether to upload the saved model to huggingface")
     parser.add_argument("--hf-entity", type=str, default="",
         help="the user or org name of the model repository from the Hugging Face Hub")
+    
+    # File arguments 
+    parser.add_argument("--save-name", type=str, default=None,
+        help="name for model to be saved as")
+    parser.add_argument("--save-dir", type=str, default='',
+        help="subdirectory of saved_models/ to save final model into")
+    parser.add_argument("--checkpoint-interval", type=int, default=0,
+        help="interval of updates to save model checkpoints at. If 0, don't save checkpoints." + \
+            "steps per checkpoint given by checkpoint_interval*train_frequency")
+    parser.add_argument("--checkpoint-dir", type=str, default='',
+        help="subdirectory of saved_checkpoints/ to save checkpoints into")
     parser.add_argument("--config-file-name", type=str, default=None,
         help="added from scheduler.py so that the main algo file knows to remove the config file on completion")
 

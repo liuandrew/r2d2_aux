@@ -15,6 +15,7 @@ from args import get_args
 
 import os
 import sys
+from pathlib import Path
 parent_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(parent_dir)
 
@@ -42,12 +43,17 @@ if __name__ == '__main__':
     
     seed = args.seed
     torch_deterministic = args.torch_deterministic
+    checkpoint_interval = args.checkpoint_interval
     track = args.track
     exp_name = args.exp_name
     
     if exp_name == None:
         exp_name = env_id
     cuda = args.cuda
+    
+    if checkpoint_interval > 0:
+        chk_folder = Path('saved_checkpoints/' + args.checkpoint_dir)/args.save_name
+        chk_folder.mkdir(exist_ok=True, parents=True)
     
     run_name = f"{exp_name}__{seed}__{int(time.time())}"
     if track:
@@ -67,6 +73,8 @@ if __name__ == '__main__':
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
+    
+    
     
     # seeding
     random.seed(seed)
@@ -164,8 +172,12 @@ if __name__ == '__main__':
                     writer.add_scalar('losses/td_loss', loss, global_step)
                     writer.add_scalar('losses/q_values', old_val.mean().item(), global_step)
                     sps = int(global_step / (time.time() - start_time))
-                    print('SPS:', int(sps))
+                    # print('SPS:', int(sps))
                     writer.add_scalar('charts/SPS', sps, global_step)
+                
+                if checkpoint_interval > 0 and (global_update_steps % checkpoint_interval == 0):
+                    chk_path = chk_folder/f'{global_update_steps}.pt'
+                    torch.save(q_network, chk_path)
                 
                 optimizer.zero_grad()
                 loss.backward()
@@ -186,7 +198,7 @@ if __name__ == '__main__':
              
 
 
-        if global_step % 2000 == 0:
+        if global_step % 2000 == 0 and global_step > 0:
             print(f'Mean episode length {np.mean(lengths)}, mean return {np.mean(returns)}')
             
             returns = []
@@ -194,8 +206,15 @@ if __name__ == '__main__':
             
     if args.save_name is not None:        
         #Save just the q_network which can be used to generate actions
-        save_path = f'saved_models/{args.save_name}.pt'
+        save_path = Path('saved_models/' + args.save_dir)
+        save_path.mkdir(exist_ok=True, parents=True)
+        save_path = save_path/f'{args.save_name}.pt'
         torch.save(q_network, save_path)
+        
+    #For completeness, also save final checkpoint
+    if checkpoint_interval > 0:
+        chk_path = chk_folder/f'{global_update_steps}.pt'
+        torch.save(q_network, chk_path)
         
         #Code to save entire training history which can be reinitialized later
         # torch.save({
