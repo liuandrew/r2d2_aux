@@ -156,7 +156,7 @@ def print_runs(folder='../runs/', prin=True, descriptions=False, ret=False,
             if prin:
                 print(branch*depth + tee+d.name)
             sub_experiments = inner_print(d, depth+1)
-            result_dict[d] = sub_experiments
+            result_dict[d.name] = sub_experiments
         
         return result_dict
             

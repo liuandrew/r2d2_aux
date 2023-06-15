@@ -112,7 +112,7 @@ def get_args():
     parser.add_argument("--target-network-frequency", type=int, default=500,
         help="the timesteps it takes to update the target network")
     parser.add_argument("--batch-size", type=int, default=128,
-        help="the batch size of sample from the reply memory")
+        help="the batch size of sample from the replay memory")
     parser.add_argument("--start-e", type=float, default=1,
         help="the starting epsilon for exploration")
     parser.add_argument("--end-e", type=float, default=0.05,
