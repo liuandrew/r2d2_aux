@@ -11,6 +11,7 @@ import time
 
 from model import RNNQNetwork, linear_schedule
 from storage import SequenceReplayBuffer
+from r2d2_class import R2D2Agent
 from args import get_args
 
 import os
@@ -24,6 +25,7 @@ from scheduler import archive_config_file
 if __name__ == '__main__':
     args = get_args()
     env_id = args.env_id
+    env_kwargs = args.env_kwargs
     learning_rate = args.learning_rate
     buffer_size = args.buffer_size
     total_timesteps = args.total_timesteps
@@ -40,6 +42,8 @@ if __name__ == '__main__':
     burn_in_length = args.burn_in_length
     sequence_length = args.sequence_length
     batch_size = args.batch_size
+    hidden_size = 64
+    n_envs = args.n_envs
     
     seed = args.seed
     torch_deterministic = args.torch_deterministic
@@ -50,6 +54,8 @@ if __name__ == '__main__':
     if exp_name == None:
         exp_name = env_id
     cuda = args.cuda
+    device = torch.device('cuda' if torch.cuda.is_available() and cuda else 'cpu')
+    
     
     if checkpoint_interval > 0:
         chk_folder = Path('saved_checkpoints/' + args.checkpoint_dir)/args.save_name
@@ -75,146 +81,49 @@ if __name__ == '__main__':
     )
     
     
-    
+    agent = R2D2Agent(batch_size, burn_in_length, sequence_length,
+                      gamma, tau, learning_rate, hidden_size,
+                      device, buffer_size, learning_starts, train_frequency,
+                      target_network_frequency, total_timesteps, start_e,
+                      end_e, exploration_fraction, seed, n_envs,
+                      False, env_id, env_kwargs, writer=writer, verbose=1)
     # seeding
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.backends.cudnn.deterministic = torch_deterministic
-
-    device = torch.device('cuda' if torch.cuda.is_available() and cuda else 'cpu')
-
-
-    env = gym.make(env_id, **args.env_kwargs)
-
-    hidden_size = 64
-    q_network = RNNQNetwork(env, hidden_size).to(device)
-    target_network = RNNQNetwork(env, hidden_size).to(device)
-    target_network.load_state_dict(q_network.state_dict())
-    optimizer = optim.Adam(q_network.parameters(), lr=learning_rate)
-
-    rb = SequenceReplayBuffer(buffer_size, env.observation_space, env.action_space,
-                            hidden_size, sequence_length, burn_in_length)
-    obs = env.reset()
-
-    lengths = []
-    returns = []
     
-    global_update_steps = 0
-    cur_episode_t = 0
-    cur_episode_r = 0
-    start_time = time.time()
+    total_timesteps = total_timesteps // n_envs
     
-    rnn_hxs = q_network.get_rnn_hxs()
-    for global_step in range(total_timesteps):
-        
-        # Collect environment data
-        epsilon = linear_schedule(start_e, end_e, 
-                                exploration_fraction*total_timesteps,
-                                global_step)
-        
-        obs_tensor = torch.Tensor(obs).to(device)
-        if obs_tensor.dim() == 1:
-            obs_tensor = obs_tensor.unsqueeze(0)
-            
-        q_values, next_rnn_hxs = q_network(obs_tensor, rnn_hxs)
-        if random.random() < epsilon:
-            action = np.array([[env.action_space.sample()]])
-        else:
-            action = np.array([[q_values.argmax()]])
-        
-        next_obs, reward, done, info = env.step(action.item())
-        cur_episode_t += 1
-        cur_episode_r += reward
-                    
-        if done:            
-            next_obs = env.reset()
-            next_rnn_hxs = q_network.get_rnn_hxs()
-            lengths.append(cur_episode_t)
-            returns.append(cur_episode_r)
-            
-            writer.add_scalar('charts/episodic_return', cur_episode_r, global_step)
-            writer.add_scalar('charts/episodic_length', cur_episode_t, global_step)
-            writer.add_scalar('charts/epsilon', epsilon, global_step)
-            
-            cur_episode_t = 0
-            cur_episode_r = 0
-
-        rb.add(obs, next_obs, action, reward, done, rnn_hxs.detach())
-        
-        obs = next_obs
-        rnn_hxs = next_rnn_hxs
-        
+    for t in range(total_timesteps):     
         #Training
-        if global_step > learning_starts:
-            if global_step % train_frequency == 0:
-                # states, actions, rewards, next_states, dones, _, _, hidden_states, next_hidden_states = rb.sample(batch_size//sequence_length)
-                sample = rb.sample(batch_size//sequence_length)
-                states = sample['observations']
-                next_states = sample['next_observations']
-                hidden_states = sample['hidden_states']
-                next_hidden_states = sample['next_hidden_states']
-                actions = sample['actions']
-                rewards = sample['rewards']
-                dones = sample['dones']
-                next_dones = sample['next_dones']
+        agent.collect(1)
+        
+        if agent.global_step > learning_starts:
+            if t % train_frequency == 0:
+                agent.update()
                 
-                with torch.no_grad():
-                    target_q, _ = target_network(next_states, next_hidden_states, next_dones)
-                    target_max, _ = target_q.max(dim=2)
-                    td_target = rewards + gamma * target_max * (1 - dones)
-                old_q, _ = q_network(states, hidden_states, dones)
-                old_val = old_q.gather(2, actions.long()).squeeze()
-
-                loss = F.mse_loss(td_target[:, burn_in_length:], old_val[:, burn_in_length:])
-                
-                if global_update_steps % 10 == 0:
-                    writer.add_scalar('losses/td_loss', loss, global_step)
-                    writer.add_scalar('losses/q_values', old_val.mean().item(), global_step)
-                    sps = int(global_step / (time.time() - start_time))
-                    # print('SPS:', int(sps))
-                    writer.add_scalar('charts/SPS', sps, global_step)
-                
-                if checkpoint_interval > 0 and (global_update_steps % checkpoint_interval == 0):
-                    chk_path = chk_folder/f'{global_update_steps}.pt'
-                    torch.save(q_network, chk_path)
-                
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                
-                global_update_steps += 1
+                if checkpoint_interval > 0 and (agent.global_update_step % checkpoint_interval == 0):
+                    chk_path = chk_folder/f'{agent.global_update_step}.pt'
+                    torch.save(agent.q_network, chk_path)
                 
                 #checkpoint
-                #if args.checkpoint_interval > 0 and global_update_steps % args.checkpoint_interval == 0:
+                #if args.checkpoint_interval > 0 and global_update_step % args.checkpoint_interval == 0:
                 #   checkpoint_path = f'saved_checkpoints/{args.save_name}'
                 #   ...
-                
-            if global_step % target_network_frequency == 0:
-                for target_network_param, q_network_param in zip(target_network.parameters(), q_network.parameters()):
-                    target_network_param.data.copy_(
-                        tau * q_network_param.data + (1 - tau) * target_network_param.data
-                    )
              
-
-
-        if global_step % 2000 == 0 and global_step > 0:
-            print(f'Mean episode length {np.mean(lengths)}, mean return {np.mean(returns)}')
-            
-            returns = []
-            lengths = []
-            
+                        
     if args.save_name is not None:        
         #Save just the q_network which can be used to generate actions
         save_path = Path('saved_models/' + args.save_dir)
         save_path.mkdir(exist_ok=True, parents=True)
         save_path = save_path/f'{args.save_name}.pt'
-        torch.save(q_network, save_path)
+        torch.save(agent.q_network, save_path)
         
     #For completeness, also save final checkpoint
     if checkpoint_interval > 0:
-        chk_path = chk_folder/f'{global_update_steps}.pt'
-        torch.save(q_network, chk_path)
+        chk_path = chk_folder/f'{agent.global_update_step}.pt'
+        torch.save(agent.q_network, chk_path)
         
         #Code to save entire training history which can be reinitialized later
         # torch.save({
@@ -225,7 +134,7 @@ if __name__ == '__main__':
         #     'last_rnn_hxs': rnn_hxs,
         #     'env': env,
         #     'global_step': global_step,
-        #     'global_update_steps': global_update_steps
+        #     'global_update_step': global_update_step
         # }, save_path)
         
     if args.config_file_name is not None:

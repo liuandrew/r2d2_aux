@@ -99,18 +99,20 @@ def get_args():
     # Algorithm specific arguments
     parser.add_argument("--env-id", type=str, default="CartPole-v1",
         help="the id of the environment")
+    parser.add_argument("--n-envs", type=int, default=4,
+        help='how many parallel vectorized envs to use (default: 4)')
     parser.add_argument("--total-timesteps", type=int, default=30000,
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
         help="the learning rate of the optimizer")
     parser.add_argument("--buffer-size", type=int, default=10000,
-        help="the replay memory buffer size")
+        help="the replay memory buffer size (note this is per env, so total will be n_envs*buffer_size)")
     parser.add_argument("--gamma", type=float, default=0.99,
         help="the discount factor gamma")
     parser.add_argument("--tau", type=float, default=1.,
         help="the target network update rate")
-    parser.add_argument("--target-network-frequency", type=int, default=500,
-        help="the timesteps it takes to update the target network")
+    parser.add_argument("--target-network-frequency", type=int, default=64,
+        help="the number of network updates it takes to update the target network")
     parser.add_argument("--batch-size", type=int, default=128,
         help="the batch size of sample from the replay memory")
     parser.add_argument("--start-e", type=float, default=1,
@@ -121,7 +123,7 @@ def get_args():
         help="the fraction of `total-timesteps` it takes from start-e to go end-e")
     parser.add_argument("--learning-starts", type=int, default=10000,
         help="timestep to start learning")
-    parser.add_argument("--train-frequency", type=int, default=10,
+    parser.add_argument("--train-frequency", type=int, default=4,
         help="the frequency of training")
     
     #R2D2 args

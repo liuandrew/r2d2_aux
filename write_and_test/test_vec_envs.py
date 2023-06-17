@@ -65,7 +65,7 @@ def make_vec_envs(env_name,
     return envs
 
 if __name__ == '__main__':
-    n_envs = 32
+    n_envs = 16
     
     envs = make_vec_envs('NavEnv-v0', n_envs)
     

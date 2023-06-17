@@ -163,7 +163,7 @@ class ResettingGRUBatched(nn.Module):
             x = x.unsqueeze(0)
             dones = dones.unsqueeze(0)
 
-        num_batches = hidden_state.shape[0]
+        num_batches = x.shape[0]
             
         extra_rows = int(dones.sum().item())
         
@@ -311,7 +311,7 @@ class RNNQNetwork(nn.Module):
         '''
         Get torch.zeros hidden states to start off with
         '''
-        if num_batches == 1:
-            return torch.zeros(1, self.hidden_size)
-        else:
-            return torch.zeros(1, num_batches, self.hidden_size)
+        # if num_batches == 1:
+        #     return torch.zeros(1, self.hidden_size)
+        # else:
+        return torch.zeros(1, num_batches, self.hidden_size)
