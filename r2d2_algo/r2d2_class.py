@@ -17,6 +17,7 @@ class R2D2Agent(nn.Module):
                  device=torch.device('cpu'), buffer_size=10_000, 
                  learning_starts=10_000, train_frequency=10, target_network_frequency=500,
                  total_timesteps=30_000, start_e=1., end_e=0.05, exploration_fraction=0.5, 
+                 alpha=0.6, beta=0.4,
                  seed=None, n_envs=1, dummy_env=True,
                  env_id='CartPole-v1', env_kwargs={},
                  verbose=0, q_network=None,  deterministic=False, env=None,
@@ -80,7 +81,9 @@ class R2D2Agent(nn.Module):
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate, eps=adam_epsilon)
         
         self.rb = SequenceReplayBuffer(buffer_size, self.env.observation_space, self.env.action_space,
-                                hidden_size, sequence_length, burn_in_length, n_envs)
+                                hidden_size, sequence_length=sequence_length, 
+                                burn_in_length=burn_in_length, n_envs=n_envs,
+                                alpha=alpha, beta=beta)
 
         
         self.global_step = 0
@@ -237,8 +240,11 @@ class R2D2Agent(nn.Module):
         old_q, _, _ = self.q_network(states, hidden_states, dones)
         old_val = old_q.gather(2, actions.long()).squeeze()
 
-        loss = F.mse_loss(td_target[:, self.burn_in_length:], old_val[:, self.burn_in_length:])
-                
+        # loss = F.mse_loss(td_target[:, self.burn_in_length:], old_val[:, self.burn_in_length:])
+        weights = sample['weights']
+        elementwise_loss = F.smooth_l1_loss(td_target[:, self.burn_in_length:],
+                                            old_val[:, self.burn_in_length:], reduction='none')
+        loss = torch.mean(elementwise_loss * weights)
                 
         if self.writer is not None and self.global_update_step % 10 == 0:
             self.writer.add_scalar('losses/td_loss', loss, self.global_step)
@@ -250,6 +256,11 @@ class R2D2Agent(nn.Module):
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()
+        
+        # PER: update priorities
+        td_priorities = elementwise_loss.detach().cpu().numpy() + 1e-6
+        self.rb.update_priorities(sample['seq_idxs'][:, self.burn_in_length:],
+                                  sample['env_idxs'], td_priorities)
         
         self.global_update_step += 1
     

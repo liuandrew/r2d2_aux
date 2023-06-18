@@ -33,6 +33,8 @@ if __name__ == '__main__':
     train_frequency = args.train_frequency
     gamma = args.gamma
     tau = args.tau
+    alpha = args.alpha
+    beta = args.beta
     adam_epsilon = args.adam_epsilon
     target_network_frequency = args.target_network_frequency
 
@@ -82,12 +84,16 @@ if __name__ == '__main__':
     )
     
     
-    agent = R2D2Agent(batch_size, burn_in_length, sequence_length,
-                      gamma, tau, learning_rate, hidden_size, adam_epsilon,
-                      device, buffer_size, learning_starts, train_frequency,
-                      target_network_frequency, total_timesteps, start_e,
-                      end_e, exploration_fraction, seed, n_envs,
-                      False, env_id, env_kwargs, writer=writer, verbose=1)
+    agent = R2D2Agent(batch_size=batch_size, burn_in_length=burn_in_length, 
+                      sequence_length=sequence_length, gamma=gamma, 
+                      tau=tau, learning_rate=learning_rate, hidden_size=hidden_size, 
+                      adam_epsilon=adam_epsilon, device=device, buffer_size=buffer_size, 
+                      learning_starts=learning_starts, train_frequency=train_frequency,
+                      target_network_frequency=target_network_frequency, 
+                      total_timesteps=total_timesteps, start_e=start_e, end_e=end_e, 
+                      exploration_fraction=exploration_fraction, alpha=alpha, 
+                      beta=beta, seed=seed, n_envs=n_envs, dummy_env=False, 
+                      env_id=env_id, env_kwargs=env_kwargs, writer=writer, verbose=1)
     # seeding
     random.seed(seed)
     np.random.seed(seed)
