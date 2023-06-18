@@ -13,7 +13,7 @@ import time
 
 class R2D2Agent(nn.Module):
     def __init__(self, batch_size=128, burn_in_length=4, sequence_length=8,
-                 gamma=0.99, tau=1., learning_rate=2.5e-4, hidden_size=64,
+                 gamma=0.99, tau=1., learning_rate=2.5e-4, hidden_size=64, adam_epsilon=1e-8,
                  device=torch.device('cpu'), buffer_size=10_000, 
                  learning_starts=10_000, train_frequency=10, target_network_frequency=500,
                  total_timesteps=30_000, start_e=1., end_e=0.05, exploration_fraction=0.5, 
@@ -46,6 +46,7 @@ class R2D2Agent(nn.Module):
         self.train_frequency = train_frequency
         self.gamma = gamma
         self.tau = tau
+        self.adam_epsilon = adam_epsilon
         self.target_network_frequency = target_network_frequency
         self.handle_target_network = handle_target_network
         self.device = device
@@ -76,7 +77,7 @@ class R2D2Agent(nn.Module):
             self.q_network = q_network
         self.target_network = RNNQNetwork(self.env, hidden_size).to(device)
         self.target_network.load_state_dict(self.q_network.state_dict())
-        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate)
+        self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate, eps=adam_epsilon)
         
         self.rb = SequenceReplayBuffer(buffer_size, self.env.observation_space, self.env.action_space,
                                 hidden_size, sequence_length, burn_in_length, n_envs)
@@ -218,7 +219,7 @@ class R2D2Agent(nn.Module):
     
     def update(self):
         """Sample from buffer and perform Q-learning"""
-    
+        
         sample = self.rb.sample(self.batch_size//self.sequence_length)
         states = sample['observations']
         next_states = sample['next_observations']

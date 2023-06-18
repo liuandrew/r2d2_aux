@@ -125,6 +125,8 @@ def get_args():
         help="timestep to start learning")
     parser.add_argument("--train-frequency", type=int, default=4,
         help="the frequency of training")
+    parser.add_argument("--adam-epsilon", type=float, default=1e-8,
+        help="epsilon hyperparameter for Adam optimizer")
     
     #R2D2 args
     parser.add_argument("--burn-in-length", type=int, default=4,

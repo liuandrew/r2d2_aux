@@ -33,6 +33,7 @@ if __name__ == '__main__':
     train_frequency = args.train_frequency
     gamma = args.gamma
     tau = args.tau
+    adam_epsilon = args.adam_epsilon
     target_network_frequency = args.target_network_frequency
 
     start_e = args.start_e
@@ -82,7 +83,7 @@ if __name__ == '__main__':
     
     
     agent = R2D2Agent(batch_size, burn_in_length, sequence_length,
-                      gamma, tau, learning_rate, hidden_size,
+                      gamma, tau, learning_rate, hidden_size, adam_epsilon,
                       device, buffer_size, learning_starts, train_frequency,
                       target_network_frequency, total_timesteps, start_e,
                       end_e, exploration_fraction, seed, n_envs,
