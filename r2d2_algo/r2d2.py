@@ -47,6 +47,7 @@ if __name__ == '__main__':
     batch_size = args.batch_size
     hidden_size = 64
     n_envs = args.n_envs
+    dummy_vec_env = args.dummy_vec_env
     
     seed = args.seed
     torch_deterministic = args.torch_deterministic
@@ -92,7 +93,7 @@ if __name__ == '__main__':
                       target_network_frequency=target_network_frequency, 
                       total_timesteps=total_timesteps, start_e=start_e, end_e=end_e, 
                       exploration_fraction=exploration_fraction, alpha=alpha, 
-                      beta=beta, seed=seed, n_envs=n_envs, dummy_env=False, 
+                      beta=beta, seed=seed, n_envs=n_envs, dummy_env=dummy_vec_env, 
                       env_id=env_id, env_kwargs=env_kwargs, writer=writer, verbose=1)
     # seeding
     random.seed(seed)

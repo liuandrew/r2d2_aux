@@ -101,6 +101,8 @@ def get_args():
         help="the id of the environment")
     parser.add_argument("--n-envs", type=int, default=4,
         help='how many parallel vectorized envs to use (default: 4)')
+    parser.add_argument("--dummy-vec-env", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+        help="if True use DummyVecEnv, if False use SubProcEnv")
     parser.add_argument("--total-timesteps", type=int, default=30000,
         help="total timesteps of the experiments")
     parser.add_argument("--learning-rate", type=float, default=2.5e-4,
