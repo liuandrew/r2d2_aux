@@ -270,7 +270,7 @@ class R2D2Agent(nn.Module):
 
     def train(self, n_updates):
         if self.global_step < self.learning_starts:
-            self.collect((self.learning_starts - self.global_step) // self.n_envs + 1)
+            self.collect(self.learning_starts - self.global_step)
         
         for i in range(n_updates):
             self.collect(self.train_frequency)

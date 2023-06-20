@@ -420,7 +420,10 @@ class SequenceReplayBuffer:
                 self.sum_tree[self.pos] = self.max_priority ** self.alpha
                 self.min_tree[self.pos] = self.max_priority ** self.alpha
                 
+                
                 self.pos = (self.pos + 1) % self.buffer_size
+                if self.pos == 0:
+                    self.full = True
 
                 
             
