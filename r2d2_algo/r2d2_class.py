@@ -219,7 +219,8 @@ class R2D2Agent(nn.Module):
     def update(self):
         """Sample from buffer and perform Q-learning"""
         
-        sample = self.rb.sample(self.batch_size//self.sequence_length)
+        # sample = self.rb.sample(self.batch_size//self.sequence_length)
+        sample = self.rb.sample(num_steps=self.batch_size)
         states = sample['observations']
         next_states = sample['next_observations']
         hidden_states = sample['hidden_states']
