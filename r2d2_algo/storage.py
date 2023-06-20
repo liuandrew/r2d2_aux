@@ -8,7 +8,7 @@ import random
 Class definitions for replay buffer used in off-policy training
 '''
 
-class SequenceReplayBuffer:
+class ContinuousSequenceReplayBuffer:
     def __init__(self, buffer_size, observation_space,
                  action_space, hidden_state_size, sequence_length=1,
                  burn_in_length=0, n_envs=1,
@@ -294,6 +294,274 @@ class SequenceReplayBuffer:
     def __len__(self):
         return len(self.buffer)
     
+    
+    
+    
+class SequenceReplayBuffer:
+    def __init__(self, buffer_size, observation_space,
+                 action_space, hidden_state_size, sequence_length=8,
+                 burn_in_length=4, n_envs=1,
+                 alpha=0.6, beta=0.4, 
+                 beta_increment=0.0001, max_priority=1.0):
+        '''
+        A replay buffer for R2D2 algorithm that when sampled, produces sequences of time steps.
+        Will continually store steps until a done is received or max sequence length is reached
+            then store that sequence into the replay buffer
+          
+        self.pos keeps track of the next index to be written to. When it reaches the end 
+          it loops back to the start.
+        
+        buffer_size: number of sequences to hold in buffer
+        sequence_length: number of steps in sequence
+        burn_in_length: number of steps before idx to be passed with sequence
+        '''
+        self.buffer_size = buffer_size
+        self.bil_sl = burn_in_length + sequence_length
+        total_buffer_size = buffer_size + sequence_length + burn_in_length
+        self.n_envs = n_envs
+        self.sequence_length = sequence_length
+        self.burn_in_length = burn_in_length
+        self.alpha = alpha
+        self.beta = beta
+        self.beta_increment = beta_increment
+        self.max_priority = max_priority
+
+        # capacity must be positive and a power of 2.
+        tree_capacity = 1
+        while tree_capacity < buffer_size:
+            tree_capacity *= 2
+        self.sum_tree = SumSegmentTree(tree_capacity) #trees hold actual priorities for faster updating and sampling
+        self.min_tree = MinSegmentTree(tree_capacity)
+        
+        # buffer shape [buffer_size, sequence_length, data_dim]
+        #  note that we add to the buffer regardless of which env the sequence comes from
+        
+        action_shape = get_action_dim(action_space)
+        self.observations = np.zeros((buffer_size, self.bil_sl, *observation_space.shape), dtype=observation_space.dtype)
+        self.next_observations = np.zeros((buffer_size, self.bil_sl, *observation_space.shape), dtype=observation_space.dtype)
+        self.actions = np.zeros((buffer_size, self.bil_sl, action_shape), dtype=action_space.dtype)
+        self.rewards = np.zeros((buffer_size, self.bil_sl), dtype=np.float32)
+        self.dones = np.zeros((buffer_size, self.bil_sl), dtype=np.float32)
+        self.hidden_states = np.zeros((buffer_size, self.bil_sl, hidden_state_size), dtype=np.float32)
+        self.next_hidden_states = np.zeros((buffer_size, self.bil_sl, hidden_state_size), dtype=np.float32)
+        # training_masks is used to keep track of which steps are trainable
+        #  note that it only has length sequence_length, as opposed to bil+sl
+        self.training_masks = np.zeros((buffer_size, self.sequence_length), dtype=np.float32)
+
+        self.cur_observations = np.zeros((n_envs, self.bil_sl, *observation_space.shape), dtype=observation_space.dtype)
+        self.cur_next_observations = np.zeros((n_envs, self.bil_sl, *observation_space.shape), dtype=observation_space.dtype)
+        self.cur_actions = np.zeros((n_envs, self.bil_sl, action_shape), dtype=action_space.dtype)
+        self.cur_rewards = np.zeros((n_envs, self.bil_sl), dtype=np.float32)
+        self.cur_dones = np.zeros((n_envs, self.bil_sl), dtype=np.float32)
+        self.cur_hidden_states = np.zeros((n_envs, self.bil_sl, hidden_state_size), dtype=np.float32)
+        self.cur_next_hidden_states = np.zeros((n_envs, self.bil_sl, hidden_state_size), dtype=np.float32)
+
+        self.pos = 0
+        
+        self.cur_pos = np.zeros(n_envs, dtype='long') # keep track of which environments are done
+        self.full = False
+        
+        
+    def add(self, obs, next_obs, action, reward, done, hidden_state, next_hidden_state):
+        '''
+        Add to the buffer. Each incoming input should be of shape
+            [n_envs, data_dim]
+        '''
+        for i in range(self.n_envs):
+            self.cur_observations[i, self.cur_pos[i]] = np.array(obs[i]).copy()
+            self.cur_next_observations[i, self.cur_pos[i]] = np.array(next_obs[i]).copy()
+            self.cur_actions[i, self.cur_pos[i]] = np.array(action[i]).copy()
+            self.cur_rewards[i, self.cur_pos[i]] = np.array(reward[i]).copy()
+            self.cur_dones[i, self.cur_pos[i]] = np.array(done[i]).copy()
+            self.cur_hidden_states[i, self.cur_pos[i]] = np.array(hidden_state[:, i, :]).copy()
+            self.cur_next_hidden_states[i, self.cur_pos[i]] = np.array(next_hidden_state[:, i, :]).copy()
+            self.cur_pos[i] += 1
+
+            if done[i] or self.cur_pos[i] == self.bil_sl:
+                # copy the sequence to the buffer
+                self.observations[self.pos] = self.cur_observations[i]
+                self.next_observations[self.pos] = self.cur_next_observations[i]
+                self.actions[self.pos] = self.cur_actions[i]
+                self.rewards[self.pos] = self.cur_rewards[i]
+                self.dones[self.pos] = self.cur_dones[i]
+                self.hidden_states[self.pos] = self.cur_hidden_states[i]
+                self.next_hidden_states[self.pos] = self.cur_next_hidden_states[i]
+
+                trainable_steps = self.cur_pos[i] - self.burn_in_length
+                training_mask = np.zeros((self.sequence_length,))
+                training_mask[:trainable_steps] = 1
+                self.training_masks[self.pos] = training_mask
+                                
+                # make copy of the last steps to carry over to next sequence
+                copy_steps = min(self.cur_pos[i], self.burn_in_length)
+                
+                # only copy if not done. If done, start a new sequence up
+                if not done[i]:
+                    self.cur_observations[i, :copy_steps] = self.cur_observations[i, self.cur_pos[i]-copy_steps:self.cur_pos[i]]
+                    self.cur_next_observations[i, :copy_steps] = self.cur_next_observations[i, self.cur_pos[i]-copy_steps:self.cur_pos[i]]
+                    self.cur_actions[i, :copy_steps] = self.cur_actions[i, self.cur_pos[i]-copy_steps:self.cur_pos[i]]
+                    self.cur_rewards[i, :copy_steps] = self.cur_rewards[i, self.cur_pos[i]-copy_steps:self.cur_pos[i]]
+                    self.cur_dones[i, :copy_steps] = self.cur_dones[i, self.cur_pos[i]-copy_steps:self.cur_pos[i]]
+                    self.cur_hidden_states[i, :copy_steps] = self.cur_hidden_states[i, self.cur_pos[i]-copy_steps:self.cur_pos[i]]
+                    self.cur_next_hidden_states[i, :copy_steps] = self.cur_next_hidden_states[i, self.cur_pos[i]-copy_steps:self.cur_pos[i]]
+                else:
+                    copy_steps = 0
+                
+                self.cur_observations[i, copy_steps:] = 0.
+                self.cur_next_observations[i, copy_steps:] = 0.
+                self.cur_actions[i, copy_steps:] = 0.
+                self.cur_rewards[i, copy_steps:] = 0.
+                self.cur_dones[i, copy_steps:] = 0.
+                self.cur_hidden_states[i, copy_steps:] = 0.
+                self.cur_next_hidden_states[i, copy_steps:] = 0.
+                
+                self.cur_pos[i] = copy_steps
+                
+                self.sum_tree[self.pos] = self.max_priority ** self.alpha
+                self.min_tree[self.pos] = self.max_priority ** self.alpha
+                
+                self.pos = (self.pos + 1) % self.buffer_size
+
+                
+            
+    def _sample_proportional(self, num_sequences):
+        '''
+        Use sum tree to sample indices from priorities in segments
+        '''
+        indices = []
+        p_total = self.sum_tree.sum()
+        segment = p_total / num_sequences
+        
+        # Check if stratified sampling will be valid based on number
+        #  of sequences asked for and fullness of storage        
+        for i in range(num_sequences):
+            a = segment * i
+            b = segment * (i + 1)
+            
+            upperbound = random.uniform(a, b)
+            idx = self.sum_tree.retrieve(upperbound)
+            indices.append(idx)
+                    
+        return indices
+    
+    
+    def _sample_uniform(self, num_sequences=1):
+        '''
+        Use sum tree to get n sample indices without stratified sampling
+        '''
+        indices = []
+        p_total = self.sum_tree.sum()
+        total_trainable_steps = 0
+
+        for i in range(num_sequences):
+            upperbound = random.uniform(0, p_total)
+            idx = self.sum_tree.retrieve(upperbound)
+            indices.append(idx)
+            total_trainable_steps += (self.training_masks[idx].sum())
+
+        return indices, total_trainable_steps
+        
+        
+    def _calculate_weight(self, idx):
+        '''Calculate the weight of the experience at idx.'''
+        # print(t_idx, env_idx)
+        
+        size = self.buffer_size if self.full else self.pos
+        size = size * self.n_envs
+        
+        # get max weight
+        p_min = self.min_tree.min() / self.sum_tree.sum()
+        max_weight = (p_min * size) ** (-self.beta)
+        
+        # calculate weights
+        p_sample = self.sum_tree[idx] / self.sum_tree.sum()
+        weight = (p_sample * size) ** (-self.beta)
+        weight = weight / max_weight
+        
+        return weight
+        
+        
+    def sample(self, num_steps=None, num_sequences=None):
+        '''
+        Generate a sample, either by number of sequences or number of steps
+        Given a number of sequences, use stratified sampling
+        '''
+        if num_sequences is not None:
+            idxs = self._sample_indices(num_sequences)
+        elif num_steps is not None:
+            idxs = []
+            num_fails = 0
+            trainable_steps_batched = 0
+            while trainable_steps_batched < num_steps and num_fails < 50:
+                new_idxs, n_trainable_steps = self._sample_uniform(1)
+                idxs += new_idxs
+                if n_trainable_steps <= 0:
+                    num_fails += 1
+                else:
+                    trainable_steps_batched += n_trainable_steps
+            
+            if num_fails >= 50:
+                print('Warning - sampling failed 50 times')
+        else:
+            raise Exception('One of num_steps or num_sequences must be given')
+            
+        
+        # weights are [N, 1] tensor to be multiplied to each sequence batch generaated
+        weights = torch.Tensor([self._calculate_weight(idxs[i]) \
+                                for i in range(len(idxs))]).reshape(-1, 1)
+
+        self.beta = min(1.0, self.beta + self.beta_increment)
+                
+        obs = torch.Tensor(self.observations[idxs])
+        next_obs = torch.Tensor(self.next_observations[idxs])
+        actions = torch.Tensor(self.actions[idxs])
+        rewards = torch.Tensor(self.rewards[idxs])
+        dones = torch.Tensor(self.dones[idxs])
+        next_dones = torch.Tensor(self.dones[idxs])
+        hidden_states = torch.Tensor(self.hidden_states[idxs, 0, :]).unsqueeze(0)
+        next_hidden_states = torch.Tensor(self.next_hidden_states[idxs, 0, :]).unsqueeze(0)
+        training_masks = torch.Tensor(self.training_masks[idxs])
+        
+        sample = {
+            'observations': obs,
+            'next_observations': next_obs,
+            'actions': actions,
+            'rewards': rewards,
+            'dones': dones,
+            'next_dones': next_dones,
+            'hidden_states': hidden_states,
+            'next_hidden_states': next_hidden_states,
+            'training_masks': training_masks,
+            'weights': weights,
+            'idxs': idxs,
+        }
+        
+        return sample
+    
+
+    def update_priorities(self, idxs, priorities):
+        '''
+        idxs: shape [N,]
+        priorities: shape [N,]
+        '''
+        
+        assert len(idxs) == len(priorities)
+
+        for idx, priority in zip(idxs, priorities):
+            assert priority > 0
+            assert 0 <= idx < len(self)
+
+            self.sum_tree[idx] = priority ** self.alpha
+            self.min_tree[idx] = priority ** self.alpha
+
+            self.max_priority = max(self.max_priority, priority)
+
+
+    def __len__(self):
+        if self.full:
+            return self.buffer_size
+        else:
+            return self.pos
     
     
     

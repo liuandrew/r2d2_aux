@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 from model import RNNQNetwork, linear_schedule
-from storage import SequenceReplayBuffer
+from storage import ContinuousSequenceReplayBuffer, SequenceReplayBuffer
 from envs import make_vec_envs
 import torch.optim as optim
 import random
@@ -80,6 +80,10 @@ class R2D2Agent(nn.Module):
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate, eps=adam_epsilon)
         
+        # self.rb = ContinuousSequenceReplayBuffer(buffer_size, self.env.observation_space, self.env.action_space,
+        #                         hidden_size, sequence_length=sequence_length, 
+        #                         burn_in_length=burn_in_length, n_envs=n_envs,
+        #                         alpha=alpha, beta=beta)
         self.rb = SequenceReplayBuffer(buffer_size, self.env.observation_space, self.env.action_space,
                                 hidden_size, sequence_length=sequence_length, 
                                 burn_in_length=burn_in_length, n_envs=n_envs,
@@ -166,16 +170,6 @@ class R2D2Agent(nn.Module):
             self.cur_episode_r += reward
             self.cur_episode_t += 1
             
-            # if done:
-            #     next_obs = env.reset()
-            #     next_rnn_hxs = self.q_network.get_rnn_hxs()
-                
-            #     if self.verbose >= 1:
-            #         print(f'Episode R: {self.cur_episode_r}, L: {self.cur_episode_t}')
-                
-            #     self.cur_episode_t = 0
-            #     self.cur_episode_r = 0
-
             # Masks are used to reset hidden state when vectorized environmnts give dones
             self.masks = torch.FloatTensor(
                 [[0.0] if done_ else [1.0] for done_ in done])
@@ -197,7 +191,9 @@ class R2D2Agent(nn.Module):
                     self.cur_episode_t[i] = 0
                     
 
-            self.rb.add(self.obs, next_obs, action, reward, done, self.rnn_hxs.detach())
+            # for ContinuousSequenceReplayBuffer
+            # self.rb.add(self.obs, next_obs, action, reward, done, self.rnn_hxs.detach())
+            self.rb.add(self.obs, next_obs, action, reward, done, self.rnn_hxs.detach(), next_rnn_hxs.detach())
             
             self.obs = next_obs
             self.rnn_hxs = next_rnn_hxs
@@ -232,6 +228,9 @@ class R2D2Agent(nn.Module):
         rewards = sample['rewards']
         dones = sample['dones']
         next_dones = sample['next_dones']
+        # training masks come from SequenceReplayBuffer and tell us which
+        #  steps in each sequence actually are viable for training
+        training_masks = sample['training_masks']
         
         with torch.no_grad():
             target_q, _, _ = self.target_network(next_states, next_hidden_states, next_dones)
@@ -244,7 +243,8 @@ class R2D2Agent(nn.Module):
         weights = sample['weights']
         elementwise_loss = F.smooth_l1_loss(td_target[:, self.burn_in_length:],
                                             old_val[:, self.burn_in_length:], reduction='none')
-        loss = torch.mean(elementwise_loss * weights)
+        # loss = torch.mean(elementwise_loss * weights)
+        loss = torch.mean(elementwise_loss * weights * training_masks)
                 
         if self.writer is not None and self.global_update_step % 10 == 0:
             self.writer.add_scalar('losses/td_loss', loss, self.global_step)
@@ -258,10 +258,13 @@ class R2D2Agent(nn.Module):
         self.optimizer.step()
         
         # PER: update priorities
-        td_priorities = elementwise_loss.detach().cpu().numpy() + 1e-6
-        self.rb.update_priorities(sample['seq_idxs'][:, self.burn_in_length:],
-                                  sample['env_idxs'], td_priorities)
-        
+        # for ContinuousSequenceReplayBuffer
+        # td_priorities = elementwise_loss.detach().cpu().numpy() + 1e-6
+        # self.rb.update_priorities(sample['seq_idxs'][:, self.burn_in_length:],
+        #                           sample['env_idxs'], td_priorities)
+        td_priorities = elementwise_loss.mean(dim=1).detach().cpu().numpy() + 1e-6
+        self.rb.update_priorities(sample['idxs'], td_priorities)
+
         self.global_update_step += 1
     
 
