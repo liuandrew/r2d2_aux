@@ -21,7 +21,7 @@ class R2D2Agent(nn.Module):
                  seed=None, n_envs=1, dummy_env=True,
                  env_id='CartPole-v1', env_kwargs={},
                  verbose=0, q_network=None,  deterministic=False, env=None,
-                 writer=None, handle_target_network=True):
+                 writer=None, handle_target_network=True,):
         """
         R2D2 setup following same parameters as args.py has
         verbose: Level of verbosity of print statements
@@ -262,7 +262,7 @@ class R2D2Agent(nn.Module):
         # td_priorities = elementwise_loss.detach().cpu().numpy() + 1e-6
         # self.rb.update_priorities(sample['seq_idxs'][:, self.burn_in_length:],
         #                           sample['env_idxs'], td_priorities)
-        td_priorities = elementwise_loss.mean(dim=1).detach().cpu().numpy() + 1e-6
+        td_priorities = elementwise_loss.max(dim=1).detach().cpu().numpy() + 1e-6
         self.rb.update_priorities(sample['idxs'], td_priorities)
 
         self.global_update_step += 1
