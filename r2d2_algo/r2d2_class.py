@@ -262,7 +262,7 @@ class R2D2Agent(nn.Module):
         # td_priorities = elementwise_loss.detach().cpu().numpy() + 1e-6
         # self.rb.update_priorities(sample['seq_idxs'][:, self.burn_in_length:],
         #                           sample['env_idxs'], td_priorities)
-        td_priorities = elementwise_loss.max(dim=1).detach().cpu().numpy() + 1e-6
+        td_priorities = elementwise_loss.max(dim=1)[0].detach().cpu().numpy() + 1e-6
         self.rb.update_priorities(sample['idxs'], td_priorities)
 
         self.global_update_step += 1
