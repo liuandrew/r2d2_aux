@@ -520,7 +520,10 @@ class SequenceReplayBuffer:
         actions = torch.Tensor(self.actions[idxs])
         rewards = torch.Tensor(self.rewards[idxs])
         dones = torch.Tensor(self.dones[idxs])
-        next_dones = torch.Tensor(self.dones[idxs])
+        # next_dones is created by unshifting dones from the right
+        next_dones = torch.zeros(dones.shape)
+        next_dones[:, :-1] = dones[:, 1:]
+               
         hidden_states = torch.Tensor(self.hidden_states[idxs, 0, :]).unsqueeze(0)
         next_hidden_states = torch.Tensor(self.next_hidden_states[idxs, 0, :]).unsqueeze(0)
         training_masks = torch.Tensor(self.training_masks[idxs])
