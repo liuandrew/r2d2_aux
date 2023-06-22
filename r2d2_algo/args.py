@@ -117,6 +117,8 @@ def get_args():
         help="alpha hyperparameter in PER, determining how strongly priorities affect sampling. 0 for standard replay")
     parser.add_argument("--beta", type=float, default=0.4,
         help="beta hyperparameter in PER, determining importance sampling strength")
+    parser.add_argument("--use-segment-tree", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+        help="whether to use segment trees for priority calculations")
     parser.add_argument("--target-network-frequency", type=int, default=64,
         help="the number of network updates it takes to update the target network")
     parser.add_argument("--batch-size", type=int, default=128,

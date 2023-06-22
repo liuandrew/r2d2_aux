@@ -35,6 +35,7 @@ if __name__ == '__main__':
     tau = args.tau
     alpha = args.alpha
     beta = args.beta
+    use_segment_tree = args.use_segment_tree
     adam_epsilon = args.adam_epsilon
     target_network_frequency = args.target_network_frequency
 
@@ -93,7 +94,8 @@ if __name__ == '__main__':
                       target_network_frequency=target_network_frequency, 
                       total_timesteps=total_timesteps, start_e=start_e, end_e=end_e, 
                       exploration_fraction=exploration_fraction, alpha=alpha, 
-                      beta=beta, seed=seed, n_envs=n_envs, dummy_env=dummy_vec_env, 
+                      beta=beta, seed=seed, n_envs=n_envs, use_segment_tree=use_segment_tree,
+                      dummy_env=dummy_vec_env, 
                       env_id=env_id, env_kwargs=env_kwargs, writer=writer, verbose=1)
     # seeding
     random.seed(seed)

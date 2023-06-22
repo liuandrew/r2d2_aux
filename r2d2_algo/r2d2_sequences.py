@@ -17,7 +17,7 @@ class R2D2Agent(nn.Module):
                  device=torch.device('cpu'), buffer_size=10_000, 
                  learning_starts=10_000, train_frequency=10, target_network_frequency=500,
                  total_timesteps=30_000, start_e=1., end_e=0.05, exploration_fraction=0.5, 
-                 alpha=0.6, beta=0.4, use_segment_tree=True,
+                 alpha=0.6, beta=0.4,
                  seed=None, n_envs=1, dummy_env=True,
                  env_id='CartPole-v1', env_kwargs={},
                  verbose=0, q_network=None,  deterministic=False, env=None,
@@ -32,7 +32,6 @@ class R2D2Agent(nn.Module):
         deterministic: If True, manually set epsilon to 0 for every act() call
         env: Also option to manually pass in an environment
         n_envs: option to make multiple envs and have q_network generate multiple
-        use_segment_tree: whether to use segment_tree for priorities or just flat arrays
         dummy_env: whether to use DummyVecEnv as opposed to SubprocVecEnv for testing
         writer: option to pass a tensorboard SummaryWriter object
         handle_target_network: whether this class is in charge of updating the target network
@@ -81,10 +80,14 @@ class R2D2Agent(nn.Module):
         self.target_network.load_state_dict(self.q_network.state_dict())
         self.optimizer = optim.Adam(self.q_network.parameters(), lr=learning_rate, eps=adam_epsilon)
         
-        self.rb = ContinuousSequenceReplayBuffer(buffer_size, self.env.observation_space, self.env.action_space,
+        # self.rb = ContinuousSequenceReplayBuffer(buffer_size, self.env.observation_space, self.env.action_space,
+        #                         hidden_size, sequence_length=sequence_length, 
+        #                         burn_in_length=burn_in_length, n_envs=n_envs,
+        #                         alpha=alpha, beta=beta)
+        self.rb = SequenceReplayBuffer(buffer_size, self.env.observation_space, self.env.action_space,
                                 hidden_size, sequence_length=sequence_length, 
                                 burn_in_length=burn_in_length, n_envs=n_envs,
-                                alpha=alpha, beta=beta, use_segment_tree=use_segment_tree)
+                                alpha=alpha, beta=beta)
 
         
         self.global_step = 0
@@ -189,7 +192,8 @@ class R2D2Agent(nn.Module):
                     
 
             # for ContinuousSequenceReplayBuffer
-            self.rb.add(self.obs, next_obs, action, reward, done, self.rnn_hxs.detach())
+            # self.rb.add(self.obs, next_obs, action, reward, done, self.rnn_hxs.detach())
+            self.rb.add(self.obs, next_obs, action, reward, done, self.rnn_hxs.detach(), next_rnn_hxs.detach())
             
             self.obs = next_obs
             self.rnn_hxs = next_rnn_hxs
@@ -205,7 +209,7 @@ class R2D2Agent(nn.Module):
             
             if self.global_step % 2000 < self.n_envs:
                 if self.verbose == 1:
-                    print(f'Mean episode length {np.mean(self.lengths)}, mean return {np.mean(self.returns)}, global step {self.global_step}')
+                    print(f'Mean episode length {np.mean(self.lengths)}, mean return {np.mean(self.returns)}')
                 self.lengths = []
                 self.returns = []
 
@@ -215,7 +219,8 @@ class R2D2Agent(nn.Module):
     def update(self):
         """Sample from buffer and perform Q-learning"""
         
-        sample = self.rb.sample(self.batch_size//self.sequence_length)
+        # sample = self.rb.sample(self.batch_size//self.sequence_length)
+        sample = self.rb.sample(num_steps=self.batch_size)
         states = sample['observations']
         next_states = sample['next_observations']
         hidden_states = sample['hidden_states']
@@ -224,6 +229,9 @@ class R2D2Agent(nn.Module):
         rewards = sample['rewards']
         dones = sample['dones']
         next_dones = sample['next_dones']
+        # training masks come from SequenceReplayBuffer and tell us which
+        #  steps in each sequence actually are viable for training
+        training_masks = sample['training_masks']
         
         with torch.no_grad():
             target_q, _, _ = self.target_network(next_states, next_hidden_states, next_dones)
@@ -236,7 +244,8 @@ class R2D2Agent(nn.Module):
         weights = sample['weights']
         elementwise_loss = F.smooth_l1_loss(td_target[:, self.burn_in_length:],
                                             old_val[:, self.burn_in_length:], reduction='none')
-        loss = torch.mean(elementwise_loss * weights)
+        # loss = torch.mean(elementwise_loss * weights)
+        loss = torch.mean(elementwise_loss * weights * training_masks)
                 
         if self.writer is not None and self.global_update_step % 10 == 0:
             self.writer.add_scalar('losses/td_loss', loss, self.global_step)
@@ -251,9 +260,12 @@ class R2D2Agent(nn.Module):
         
         # PER: update priorities
         # for ContinuousSequenceReplayBuffer
-        td_priorities = elementwise_loss.detach().cpu().numpy() + 1e-6
-        self.rb.update_priorities(sample['seq_idxs'][:, self.burn_in_length:],
-                                  sample['env_idxs'], td_priorities)
+        # td_priorities = elementwise_loss.detach().cpu().numpy() + 1e-6
+        # self.rb.update_priorities(sample['seq_idxs'][:, self.burn_in_length:],
+        #                           sample['env_idxs'], td_priorities)
+        td_priorities = elementwise_loss.max(dim=1)[0].detach().cpu().numpy() + 1e-6
+        self.rb.update_priorities(sample['idxs'], td_priorities)
+
         self.global_update_step += 1
     
 

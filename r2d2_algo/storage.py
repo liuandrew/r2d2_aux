@@ -13,7 +13,8 @@ class ContinuousSequenceReplayBuffer:
                  action_space, hidden_state_size, sequence_length=1,
                  burn_in_length=0, n_envs=1,
                  alpha=0.6, beta=0.4, 
-                 beta_increment=0.0001, max_priority=1.0):
+                 beta_increment=0.0001, max_priority=1.0,
+                 use_segment_tree=False):
         '''
         A replay buffer for R2D2 algorithm that when sampled, produces sequences of time steps.
         Any index can be samples from, and burn_in_length steps before the index and sequence_length
@@ -43,16 +44,22 @@ class ContinuousSequenceReplayBuffer:
         self.beta = beta
         self.beta_increment = beta_increment
         self.max_priority = max_priority
+        self.use_segment_tree = use_segment_tree
+        self.total_buffer_size = total_buffer_size
 
         self.td_priorities = np.zeros(total_buffer_size*n_envs) #holds individual td errors for priority calculations
         # capacity must be positive and a power of 2.
-        tree_capacity = 1
-        while tree_capacity < total_buffer_size*n_envs:
-            tree_capacity *= 2
-        self.sum_tree = SumSegmentTree(tree_capacity) #trees hold actual priorities for faster updating and sampling
-        self.min_tree = MinSegmentTree(tree_capacity)
-        self.total_buffer_size = total_buffer_size
         
+        if self.use_segment_tree:
+            tree_capacity = 1
+            while tree_capacity < total_buffer_size*n_envs:
+                tree_capacity *= 2
+            self.sum_tree = SumSegmentTree(tree_capacity) #trees hold actual priorities for faster updating and sampling
+            self.min_tree = MinSegmentTree(tree_capacity)
+        else:
+            self.priorities = np.zeros(total_buffer_size*n_envs)
+            self.min_priority = self.max_priority
+
         action_shape = get_action_dim(action_space)
         self.observations = np.zeros((total_buffer_size, n_envs, *observation_space.shape), dtype=observation_space.dtype)
         self.actions = np.zeros((total_buffer_size, n_envs, action_shape), dtype=action_space.dtype)
@@ -79,20 +86,31 @@ class ContinuousSequenceReplayBuffer:
         self.rewards[self.pos] = np.array(reward).copy()
         self.dones[self.pos] = np.array(done).copy()
         self.hidden_states[self.pos] = np.array(hidden_state).copy()
-        
-        for i in range(self.n_envs):
-            self.td_priorities[self.pos + i*self.total_buffer_size] = self.max_priority
-            # 0 out probabilities for indexes that become invalid
-            self.sum_tree[self.pos + i*self.total_buffer_size] = 0.
-            self.sum_tree[self.pos + i*self.total_buffer_size + bil] = 0.
-        if (self.full and self.pos >= bil + sl) or (self.pos >= 2*bil + sl):
-            # only update steps in the past 
-            #  there is a very slight chance this overwrites some priority that was set in 
-            #  an update step but shouldn't make a huge difference
+
+        # 0 out probabilities for indexes that become invalid
+        if self.use_segment_tree:
             for i in range(self.n_envs):
-                self.sum_tree[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
-                self.min_tree[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
-        
+                self.td_priorities[self.pos + i*self.total_buffer_size] = self.max_priority
+                self.sum_tree[self.pos + i*self.total_buffer_size] = 0.
+                self.sum_tree[self.pos + i*self.total_buffer_size + bil] = 0.
+        else:
+            for i in range(self.n_envs):
+                self.priorities[self.pos + i*self.total_buffer_size] = 0.
+                self.priorities[self.pos + i*self.total_buffer_size + bil] = 0.
+                
+        # only update steps in the past 
+        #  there is a very slight chance this overwrites some priority that was set in 
+        #  an update step but shouldn't make a huge difference
+        if self.use_segment_tree:
+            if (self.full and self.pos >= bil + sl) or (self.pos >= 2*bil + sl):
+                for i in range(self.n_envs):
+                    self.sum_tree[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
+                    self.min_tree[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
+        else:
+            if (self.full and self.pos >= bil + sl) or (self.pos >= 2*bil + sl):
+                for i in range(self.n_envs):
+                    self.priorities[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
+                    
         
         #Make copies to extra end portion
         #Note that this makes it so that for a sequence_length period of time
@@ -130,43 +148,55 @@ class ContinuousSequenceReplayBuffer:
         '''
         Use sum tree to sample indices from priorities in segments
         '''
-        t_indices = []
-        env_indices = []
-        p_total = self.sum_tree.sum()
-        segment = p_total / num_sequences
-        
-        # Check if stratified sampling will be valid based on number
-        #  of sequences asked for and fullness of storage        
-        for i in range(num_sequences):
-            found = False
-            sample_attempt_count = 0
-            valid_idxs = self.get_valid_idxs()
+        if self.use_segment_tree:
+            t_indices = []
+            env_indices = []
+            p_total = self.sum_tree.sum()
+            segment = p_total / num_sequences
             
-            a = segment * i
-            b = segment * (i + 1)
-            
-            while not found and sample_attempt_count < 50:
-                upperbound = random.uniform(a, b)
-                idx = self.sum_tree.retrieve(upperbound)
-                # print(idx)
-                t_index = idx % self.total_buffer_size
-                if valid_idxs[t_index]:
-                    found = True
-                sample_attempt_count += 1
-            
-            if sample_attempt_count >= 50:
-                # If this happens, either buffer is not being filled enough before
-                #  samples are being called for, or there is a bug
-                print('Warning: sample index failed to find valid index 50 times')
+            # Check if stratified sampling will be valid based on number
+            #  of sequences asked for and fullness of storage        
+            for i in range(num_sequences):
+                found = False
+                sample_attempt_count = 0
+                valid_idxs = self.get_valid_idxs()
                 
-            t_indices.append(idx % self.total_buffer_size)
-            env_indices.append(idx // self.total_buffer_size)
+                a = segment * i
+                b = segment * (i + 1)
+                
+                while not found and sample_attempt_count < 50:
+                    upperbound = random.uniform(a, b)
+                    idx = self.sum_tree.retrieve(upperbound)
+                    # print(idx)
+                    t_index = idx % self.total_buffer_size
+                    if valid_idxs[t_index]:
+                        found = True
+                    sample_attempt_count += 1
+                
+                if sample_attempt_count >= 50:
+                    # If this happens, either buffer is not being filled enough before
+                    #  samples are being called for, or there is a bug
+                    print('Warning: sample index failed to find valid index 50 times')
+                    
+                t_indices.append(idx % self.total_buffer_size)
+                env_indices.append(idx // self.total_buffer_size)
+                
+            
+            return np.array(t_indices), np.array(env_indices)
+        
+        else:
+            p_cumsum = np.cumsum(self.priorities)
+            p_total = p_cumsum[-1]
+            rand_vals = np.random.random(num_sequences) * p_total
+            idxs = (p_cumsum.reshape(-1, 1) > rand_vals).argmax(axis=0)
+
+            t_indices = idxs % self.total_buffer_size
+            env_indices = idxs // self.total_buffer_size
+            
+            return t_indices, env_indices, idxs, p_total
             
         
-        return np.array(t_indices), np.array(env_indices)
-        
-        
-    def _calculate_weight(self, t_idx, env_idx):
+    def _calculate_weight(self, t_idx, env_idx, p_total=None):
         '''Calculate the weight of the experience at idx.'''
         # print(t_idx, env_idx)
         
@@ -195,7 +225,10 @@ class ContinuousSequenceReplayBuffer:
         It is up to the one calling sample to take into account how many
         sequence samples it wants
         '''
-        t_idxs, env_idxs = self._sample_indices(num_sequences)
+        if self.use_segment_tree:
+            t_idxs, env_idxs = self._sample_indices(num_sequences)
+        else:
+            t_idxs, env_idxs, idxs, p_total = self._sample_indices(num_sequences)
         start_idxs = t_idxs - self.burn_in_length
         
         window_idxs = np.arange(-self.burn_in_length, self.sequence_length)
@@ -204,9 +237,21 @@ class ContinuousSequenceReplayBuffer:
         seq_env_idxs = np.full((num_sequences, window_length), env_idxs[:, np.newaxis])
         
         # weights are [N, 1] tensor to be multiplied to each sequence batch generaated
-        weights = torch.Tensor([self._calculate_weight(t_idxs[i], env_idxs[i]) \
-                                for i in range(num_sequences)]).reshape(-1, 1)
-
+        if self.use_segment_tree:
+            weights = torch.Tensor([self._calculate_weight(t_idxs[i], env_idxs[i]) \
+                                    for i in range(num_sequences)]).reshape(-1, 1)
+        else:
+            p_min = (self.min_priority / p_total)
+            size = self.__len__()
+            max_weight = (p_min * size) ** -self.beta
+            weights = []
+            for idx in idxs:
+                p_sample = self.priorities[idx] / p_total
+                weight = (p_sample * size) ** -self.beta
+                weight = weight / max_weight
+                weights.append(weight)
+            weights = torch.Tensor(weights).reshape(-1, 1)
+            
         self.beta = min(1.0, self.beta + self.beta_increment)
                 
         obs = torch.Tensor(self.observations[seq_idxs, seq_env_idxs])
@@ -272,27 +317,51 @@ class ContinuousSequenceReplayBuffer:
         
         valid_idxs = self.get_valid_idxs()
         
-        n_batches = len(env_idxs)
-        for i in range(n_batches):
-            update_priority_idxs = seq_idxs[i] + env_idxs[i] * self.total_buffer_size
-            self.td_priorities[update_priority_idxs] = priorities[i]
+        if self.use_segment_tree:
+            n_batches = len(env_idxs)
+            for i in range(n_batches):
+                update_priority_idxs = seq_idxs[i] + env_idxs[i] * self.total_buffer_size
+                self.td_priorities[update_priority_idxs] = priorities[i]
 
-            for j in range(len(update_priority_idxs)):
-                start = seq_idxs[i, j] + env_idxs[i]*self.total_buffer_size
+                for j in range(len(update_priority_idxs)):
+                    start = seq_idxs[i, j] + env_idxs[i]*self.total_buffer_size
 
-                # check if the updated priority needs to be copied to buffer end segment
-                if seq_idxs[i, j] < self.burn_in_length + self.sequence_length:
-                    copy_idx = start + self.buffer_size
-                    self.td_priorities[copy_idx] = priorities[i, j]
+                    # check if the updated priority needs to be copied to buffer end segment
+                    if seq_idxs[i, j] < self.burn_in_length + self.sequence_length:
+                        copy_idx = start + self.buffer_size
+                        self.td_priorities[copy_idx] = priorities[i, j]
 
-                if valid_idxs[seq_idxs[i, j]]:
-                    # next update priority based on future td_steps
-                    avg_td_priority = self.td_priorities[start:start+self.sequence_length].sum() / self.sequence_length
-                    self.sum_tree[start] = avg_td_priority ** self.alpha
-                    self.min_tree[start] = avg_td_priority ** self.alpha
+                    if valid_idxs[seq_idxs[i, j]]:
+                        # next update priority based on future td_steps
+                        avg_td_priority = self.td_priorities[start:start+self.sequence_length].sum() / self.sequence_length
+                        self.sum_tree[start] = avg_td_priority ** self.alpha
+                        self.min_tree[start] = avg_td_priority ** self.alpha
+                        
+        else:
+            n_batches = len(env_idxs)
+            for i in range(n_batches):
+                update_priority_idxs = seq_idxs[i] + env_idxs[i] * self.total_buffer_size
+                self.td_priorities[update_priority_idxs] = priorities[i]
+
+                for j in range(len(update_priority_idxs)):
+                    start = seq_idxs[i, j] + env_idxs[i]*self.total_buffer_size
+
+                    # check if the updated priority needs to be copied to buffer end segment
+                    if seq_idxs[i, j] < self.burn_in_length + self.sequence_length:
+                        copy_idx = start + self.buffer_size
+                        self.td_priorities[copy_idx] = priorities[i, j]
+
+                    if valid_idxs[seq_idxs[i, j]]:
+                        # next update priority based on future td_steps
+                        avg_td_priority = self.td_priorities[start:start+self.sequence_length].sum() / self.sequence_length
+                        self.priorities[start] = avg_td_priority ** self.alpha
+                        self.min_priority = min(self.min_priority, avg_td_priority ** self.alpha)
 
     def __len__(self):
-        return len(self.buffer)
+        if self.full:
+            return self.buffer_size
+        else:
+            return self.pos
     
     
     
