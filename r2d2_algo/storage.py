@@ -14,7 +14,7 @@ class ContinuousSequenceReplayBuffer:
                  burn_in_length=0, n_envs=1,
                  alpha=0.6, beta=0.4, 
                  beta_increment=0.0001, max_priority=1.0,
-                 use_segment_tree=False):
+                 use_segment_tree=False, use_priorities=True):
         '''
         A replay buffer for R2D2 algorithm that when sampled, produces sequences of time steps.
         Any index can be samples from, and burn_in_length steps before the index and sequence_length
@@ -45,6 +45,7 @@ class ContinuousSequenceReplayBuffer:
         self.beta_increment = beta_increment
         self.max_priority = max_priority
         self.use_segment_tree = use_segment_tree
+        self.use_priorities = use_priorities
         self.total_buffer_size = total_buffer_size
 
         self.td_priorities = np.zeros(total_buffer_size*n_envs) #holds individual td errors for priority calculations
@@ -66,7 +67,7 @@ class ContinuousSequenceReplayBuffer:
         self.rewards = np.zeros((total_buffer_size, n_envs), dtype=np.float32)
         self.dones = np.zeros((total_buffer_size, n_envs), dtype=np.float32)
         self.hidden_states = np.zeros((total_buffer_size, n_envs, hidden_state_size), dtype=np.float32)
-
+        self.masks = np.zeros((total_buffer_size, n_envs), dtype=np.float32)
         
         self.pos = burn_in_length
         self.full = False
@@ -87,29 +88,30 @@ class ContinuousSequenceReplayBuffer:
         self.dones[self.pos] = np.array(done).copy()
         self.hidden_states[self.pos] = np.array(hidden_state).copy()
 
-        # 0 out probabilities for indexes that become invalid
-        if self.use_segment_tree:
-            for i in range(self.n_envs):
-                self.td_priorities[self.pos + i*self.total_buffer_size] = self.max_priority
-                self.sum_tree[self.pos + i*self.total_buffer_size] = 0.
-                self.sum_tree[self.pos + i*self.total_buffer_size + bil] = 0.
-        else:
-            for i in range(self.n_envs):
-                self.priorities[self.pos + i*self.total_buffer_size] = 0.
-                self.priorities[self.pos + i*self.total_buffer_size + bil] = 0.
-                
-        # only update steps in the past 
-        #  there is a very slight chance this overwrites some priority that was set in 
-        #  an update step but shouldn't make a huge difference
-        if self.use_segment_tree:
-            if (self.full and self.pos >= bil + sl) or (self.pos >= 2*bil + sl):
+        if self.use_priorities:
+            # 0 out probabilities for indexes that become invalid
+            if self.use_segment_tree:
                 for i in range(self.n_envs):
-                    self.sum_tree[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
-                    self.min_tree[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
-        else:
-            if (self.full and self.pos >= bil + sl) or (self.pos >= 2*bil + sl):
+                    self.td_priorities[self.pos + i*self.total_buffer_size] = self.max_priority
+                    self.sum_tree[self.pos + i*self.total_buffer_size] = 0.
+                    self.sum_tree[self.pos + i*self.total_buffer_size + bil] = 0.
+            else:
                 for i in range(self.n_envs):
-                    self.priorities[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
+                    self.priorities[self.pos + i*self.total_buffer_size] = 0.
+                    self.priorities[self.pos + i*self.total_buffer_size + bil] = 0.
+                    
+            # only update steps in the past 
+            #  there is a very slight chance this overwrites some priority that was set in 
+            #  an update step but shouldn't make a huge difference
+            if self.use_segment_tree:
+                if (self.full and self.pos >= bil + sl) or (self.pos >= 2*bil + sl):
+                    for i in range(self.n_envs):
+                        self.sum_tree[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
+                        self.min_tree[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
+            else:
+                if (self.full and self.pos >= bil + sl) or (self.pos >= 2*bil + sl):
+                    for i in range(self.n_envs):
+                        self.priorities[self.pos + i*self.total_buffer_size - sl] = self.max_priority ** self.alpha
                     
         
         #Make copies to extra end portion
@@ -225,32 +227,46 @@ class ContinuousSequenceReplayBuffer:
         It is up to the one calling sample to take into account how many
         sequence samples it wants
         '''
-        if self.use_segment_tree:
-            t_idxs, env_idxs = self._sample_indices(num_sequences)
-        else:
-            t_idxs, env_idxs, idxs, p_total = self._sample_indices(num_sequences)
-        start_idxs = t_idxs - self.burn_in_length
         
+        if self.use_priorities:
+            if self.use_segment_tree:
+                t_idxs, env_idxs = self._sample_indices(num_sequences)
+            else:
+                t_idxs, env_idxs, idxs, p_total = self._sample_indices(num_sequences)
+            start_idxs = t_idxs - self.burn_in_length
+        else:
+            valid_idxs = self.get_valid_idxs(ret_idxs=True)
+            t_idxs = np.random.choice(valid_idxs, num_sequences)
+            start_idxs = t_idxs - self.burn_in_length
+            
+            env_idxs = np.random.randint(0, high=self.n_envs, size=(num_sequences,))
+
         window_idxs = np.arange(-self.burn_in_length, self.sequence_length)
         window_length = len(window_idxs)
         seq_idxs = t_idxs[:, np.newaxis] + window_idxs
+
         seq_env_idxs = np.full((num_sequences, window_length), env_idxs[:, np.newaxis])
+
         
         # weights are [N, 1] tensor to be multiplied to each sequence batch generaated
-        if self.use_segment_tree:
-            weights = torch.Tensor([self._calculate_weight(t_idxs[i], env_idxs[i]) \
-                                    for i in range(num_sequences)]).reshape(-1, 1)
+        
+        if self.use_priorities:
+            if self.use_segment_tree:
+                weights = torch.Tensor([self._calculate_weight(t_idxs[i], env_idxs[i]) \
+                                        for i in range(num_sequences)]).reshape(-1, 1)
+            else:
+                p_min = (self.min_priority / p_total)
+                size = self.__len__()
+                max_weight = (p_min * size) ** -self.beta
+                weights = []
+                for idx in idxs:
+                    p_sample = self.priorities[idx] / p_total
+                    weight = (p_sample * size) ** -self.beta
+                    weight = weight / max_weight
+                    weights.append(weight)
+                weights = torch.Tensor(weights).reshape(-1, 1)
         else:
-            p_min = (self.min_priority / p_total)
-            size = self.__len__()
-            max_weight = (p_min * size) ** -self.beta
-            weights = []
-            for idx in idxs:
-                p_sample = self.priorities[idx] / p_total
-                weight = (p_sample * size) ** -self.beta
-                weight = weight / max_weight
-                weights.append(weight)
-            weights = torch.Tensor(weights).reshape(-1, 1)
+            weights = torch.ones((num_sequences, 1))
             
         self.beta = min(1.0, self.beta + self.beta_increment)
                 
@@ -263,6 +279,7 @@ class ContinuousSequenceReplayBuffer:
         
         hidden_states = torch.Tensor(self.hidden_states[start_idxs, env_idxs]).unsqueeze(0)
         next_hidden_states = torch.Tensor(self.hidden_states[start_idxs+1, env_idxs]).unsqueeze(0)
+        all_next_hidden_states = torch.Tensor(self.hidden_states[seq_idxs+1, seq_env_idxs])
         
         sample = {
             'observations': obs,
@@ -273,6 +290,7 @@ class ContinuousSequenceReplayBuffer:
             'next_dones': next_dones,
             'hidden_states': hidden_states,
             'next_hidden_states': next_hidden_states,
+            'all_next_hidden_states': all_next_hidden_states,
             'weights': weights,
             't_idxs': t_idxs,
             'seq_idxs': seq_idxs,
@@ -282,7 +300,7 @@ class ContinuousSequenceReplayBuffer:
         return sample
     
     
-    def get_valid_idxs(self):
+    def get_valid_idxs(self, ret_idxs=False):
         '''
         Get array of valid indexes that can be sampled. Valid indexes are those with enough time steps
         of data earlier to match burn_in_lenth and with enough time steps of data later to match
@@ -290,23 +308,40 @@ class ContinuousSequenceReplayBuffer:
         
         return a self.total_buffer_size (bil+buffer_size+seq_len) boolean array
             that can be checked for truth by indexing directly
+            
+        if ret_idxs is False, return an array of valid idxs as numbers
         
         Note: there is a slight bug here to be fixed in the future - there is a period where self.pos
           loops back that the sequence_length post buffer is stale until overwritten fully 
         '''        
         start = self.burn_in_length
         end = self.burn_in_length + self.buffer_size
-        valid_idxs = np.full(self.total_buffer_size, False)
-        if self.full:
-            #Have enough terms ahead to be usable
-            valid_idxs[start:self.pos - self.sequence_length] = True
-            #Have enough terms behind to be usable
-            valid_idxs[self.pos + self.burn_in_length-1:end] = True
-        else:
-            #First burn_in_length steps are not valid because they haven't been copied
-            valid_idxs[start + self.burn_in_length:self.pos - self.sequence_length] = True
         
-        return valid_idxs
+        if ret_idxs is False:
+            valid_idxs = np.full(self.total_buffer_size, False)
+            if self.full:
+                #Have enough terms ahead to be usable
+                valid_idxs[start:self.pos - self.sequence_length] = True
+                #Have enough terms behind to be usable
+                valid_idxs[self.pos + self.burn_in_length-1:end] = True
+            else:
+                #First burn_in_length steps are not valid because they haven't been copied
+                valid_idxs[start + self.burn_in_length:self.pos - self.sequence_length] = True
+            return valid_idxs
+        
+        
+        else:
+            if self.full:
+                #Have enough terms ahead to be usable
+                valid1 = np.arange(start, self.pos - self.sequence_length)
+                #Have enough terms behind to be usable
+                valid2 = np.arange(self.pos + self.burn_in_length + 1, end)
+                valid_idxs = np.concatenate([valid1, valid2])
+            else:
+                #First burn_in_length steps are not valid because they haven't been copied
+                valid_idxs = np.arange(start + self.burn_in_length, self.pos - self.sequence_length)
+            return valid_idxs
+        
 
     def update_priorities(self, seq_idxs, env_idxs, priorities):
         '''
@@ -314,6 +349,9 @@ class ContinuousSequenceReplayBuffer:
         env_idxs: shape [N,] for N batches
         priorities: shape [N, seq_len]
         '''
+        
+        if not self.use_priorities:
+            return
         
         valid_idxs = self.get_valid_idxs()
         
@@ -594,6 +632,7 @@ class SequenceReplayBuffer:
         next_dones[:, :-1] = dones[:, 1:]
                
         hidden_states = torch.Tensor(self.hidden_states[idxs, 0, :]).unsqueeze(0)
+        next_hidden_states = torch.Tensor(self.next_hidden_states[idxs, 0, :]).unsqueeze(0)
         next_hidden_states = torch.Tensor(self.next_hidden_states[idxs, 0, :]).unsqueeze(0)
         training_masks = torch.Tensor(self.training_masks[idxs])
         

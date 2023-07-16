@@ -36,6 +36,7 @@ if __name__ == '__main__':
     alpha = args.alpha
     beta = args.beta
     use_segment_tree = args.use_segment_tree
+    use_nstep_returns = args.use_nstep_returns
     adam_epsilon = args.adam_epsilon
     target_network_frequency = args.target_network_frequency
 
@@ -63,8 +64,9 @@ if __name__ == '__main__':
     
     
     if checkpoint_interval > 0:
-        chk_folder = Path('saved_checkpoints/' + args.checkpoint_dir)/args.save_name
+        chk_folder = Path('saved_checkpoints/' + args.save_dir)/args.save_name
         chk_folder.mkdir(exist_ok=True, parents=True)
+    
     
     run_name = f"{exp_name}__{seed}__{int(time.time())}"
     if track:
@@ -79,7 +81,11 @@ if __name__ == '__main__':
             monitor_gym=True,
             save_code=True,
         )
-    writer = SummaryWriter(f'runs/{run_name}')
+        
+    writer_path = Path('runs/' + args.save_dir)
+    writer_path.mkdir(exist_ok=True, parents=True)
+    writer_path = writer_path/run_name
+    writer = SummaryWriter(writer_path)
     writer.add_text(
         "hyperparameters",
         "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
@@ -95,6 +101,7 @@ if __name__ == '__main__':
                       total_timesteps=total_timesteps, start_e=start_e, end_e=end_e, 
                       exploration_fraction=exploration_fraction, alpha=alpha, 
                       beta=beta, seed=seed, n_envs=n_envs, use_segment_tree=use_segment_tree,
+                      use_nstep_returns=use_nstep_returns,
                       dummy_env=dummy_vec_env, 
                       env_id=env_id, env_kwargs=env_kwargs, writer=writer, verbose=1)
     # seeding
@@ -123,7 +130,7 @@ if __name__ == '__main__':
                 #   ...
              
                         
-    if args.save_name is not None:        
+    if args.save_name is not None:
         #Save just the q_network which can be used to generate actions
         save_path = Path('saved_models/' + args.save_dir)
         save_path.mkdir(exist_ok=True, parents=True)

@@ -87,12 +87,10 @@ def get_args():
     parser.add_argument("--save-name", type=str, default=None,
         help="name for model to be saved as")
     parser.add_argument("--save-dir", type=str, default='',
-        help="subdirectory of saved_models/ to save final model into")
+        help="subdirectory of runs/, saved_models/, saved_checkpoints/ to save to")
     parser.add_argument("--checkpoint-interval", type=int, default=0,
         help="interval of updates to save model checkpoints at. If 0, don't save checkpoints." + \
             "steps per checkpoint given by checkpoint_interval*train_frequency")
-    parser.add_argument("--checkpoint-dir", type=str, default='',
-        help="subdirectory of saved_checkpoints/ to save checkpoints into")
     parser.add_argument("--config-file-name", type=str, default=None,
         help="added from scheduler.py so that the main algo file knows to remove the config file on completion")
 
@@ -117,6 +115,8 @@ def get_args():
         help="alpha hyperparameter in PER, determining how strongly priorities affect sampling. 0 for standard replay")
     parser.add_argument("--beta", type=float, default=0.4,
         help="beta hyperparameter in PER, determining importance sampling strength")
+    parser.add_argument("--use-nstep-returns", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
+        help="whether to use all rewards in the returned sequences as td targets as opposed to 1 step fully bootstrapped targets")
     parser.add_argument("--use-segment-tree", type=lambda x: bool(strtobool(x)), default=False, nargs="?", const=True,
         help="whether to use segment trees for priority calculations")
     parser.add_argument("--target-network-frequency", type=int, default=64,

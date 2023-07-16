@@ -11,13 +11,15 @@ import gym
 import gym_nav
 import time
 
+
 class R2D2Agent(nn.Module):
     def __init__(self, batch_size=128, burn_in_length=4, sequence_length=8,
                  gamma=0.99, tau=1., learning_rate=2.5e-4, hidden_size=64, adam_epsilon=1e-8,
                  device=torch.device('cpu'), buffer_size=10_000, 
                  learning_starts=10_000, train_frequency=10, target_network_frequency=500,
                  total_timesteps=30_000, start_e=1., end_e=0.05, exploration_fraction=0.5, 
-                 alpha=0.6, beta=0.4, use_segment_tree=True,
+                 alpha=0.6, beta=0.4, use_segment_tree=True, use_priorities=True,
+                 use_nstep_returns=False,
                  seed=None, n_envs=1, dummy_env=True,
                  env_id='CartPole-v1', env_kwargs={},
                  verbose=0, q_network=None,  deterministic=False, env=None,
@@ -59,6 +61,7 @@ class R2D2Agent(nn.Module):
 
         self.burn_in_length = burn_in_length
         self.sequence_length = sequence_length
+        self.use_nstep_returns = use_nstep_returns
         self.batch_size = batch_size
         self.n_envs = n_envs
         self.hidden_size = hidden_size
@@ -84,7 +87,8 @@ class R2D2Agent(nn.Module):
         self.rb = ContinuousSequenceReplayBuffer(buffer_size, self.env.observation_space, self.env.action_space,
                                 hidden_size, sequence_length=sequence_length, 
                                 burn_in_length=burn_in_length, n_envs=n_envs,
-                                alpha=alpha, beta=beta, use_segment_tree=use_segment_tree)
+                                alpha=alpha, beta=beta, use_segment_tree=use_segment_tree,
+                                use_priorities=use_priorities)
 
         
         self.global_step = 0
@@ -151,7 +155,13 @@ class R2D2Agent(nn.Module):
         if len(action.shape) == 1:
             action = action[np.newaxis, :]
 
-        return action, q_values, next_rnn_hxs
+        data = {
+            'action': action,
+            'q_values':  q_values,
+            'next_rnn_hxs': next_rnn_hxs,
+        }
+
+        return data
                 
         
     def collect(self, num_steps):
@@ -161,7 +171,9 @@ class R2D2Agent(nn.Module):
         env = self.env
         
         for t in range(num_steps):
-            action, q_values, next_rnn_hxs = self.act(self.obs, self.rnn_hxs, masks=self.masks)
+            outputs = self.act(self.obs, self.rnn_hxs, masks=self.masks)
+            action = outputs['action']
+            next_rnn_hxs = outputs['next_rnn_hxs']
             next_obs, reward, done, info = env.step(action)
             
             self.cur_episode_r += reward
@@ -225,10 +237,24 @@ class R2D2Agent(nn.Module):
         dones = sample['dones']
         next_dones = sample['next_dones']
         
-        with torch.no_grad():
-            target_q, _, _ = self.target_network(next_states, next_hidden_states, next_dones)
-            target_max, _ = target_q.max(dim=2)
-            td_target = rewards + self.gamma * target_max * (1 - dones)
+        if self.use_nstep_returns:
+            # Q targets computed using sequence long returns
+            all_next_hidden_states = sample['all_next_hidden_states']
+            with torch.no_grad():
+                returns = torch.zeros((rewards.shape[0], rewards.shape[1]+1))
+                final_q, _, _ = self.target_network(next_states[:, -1:], all_next_hidden_states[:, -1].unsqueeze(0), next_dones[:, -1:])
+                q_max, _ = final_q.max(dim=2)
+                returns[:, -1] = q_max.squeeze()
+                
+                for step in reversed(range(rewards.shape[1])):
+                    returns[:, step] = returns[:, step+1] * self.gamma * (1 - dones[:, step]) + rewards[:, step]
+            td_target = returns[:, :-1]
+        else:
+            # Q targets computed using 1 step td errors
+            with torch.no_grad():
+                target_q, _, _ = self.target_network(next_states, next_hidden_states, next_dones)
+                target_max, _ = target_q.max(dim=2)
+                td_target = rewards + self.gamma * target_max * (1 - dones)
         old_q, _, _ = self.q_network(states, hidden_states, dones)
         old_val = old_q.gather(2, actions.long()).squeeze()
 
